@@ -1,0 +1,381 @@
+---
+title: "PSTAT 131 Final Project"
+output: ioslides_presentation
+date: "2023-05-26"
+---
+
+**Introduction**
+The goal of this project is to predict how the time of year affects the likelihood of a homicide occurring in Chicago. I am using data found on Kaggle that is pulled directly from the City of Chicago public records. This extensive dataset shows all 1,456,714 crimes recorded between the years 2012 and 2017. I will be implementing machine learning techniques learned throughout the quarter to find the most accurate model to analyze this classification problem.
+
+**Inspiration**
+This data set was a very intuitive one for me to choose because I have an internship with the San Mateo County Investigations Bureau this summer, working on investigating serious crimes such as homicides, assaults, kidnappings, and gang activity. I specifically chose Chicago because it’s where I want to live after I graduate, and hence where I hope to start a career in this field. Additionally, Chicago is famous for having some of the highest crime rates in the United States, making its crime data very accessible. With all of these factors, I feel like this data set is the perfect one for me to analyze for this machine learning project.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r}
+library(tidymodels)
+library(ISLR)
+library(ISLR2)
+library(tidyverse)
+library(glmnet)
+library(dplyr)
+library(naniar)
+library(ggplot2)
+library(corrplot)
+library(pROC)
+library(janitor)
+library(MASS)
+library(discrim)
+library(kknn)
+library(vip)
+```
+
+**Loading Data**
+```{r}
+# raw data
+crime_raw <- read.csv('/Users/anabellegutman/Desktop/PSTAT 131/Final Project/Chicago_Crimes_2012_to_2017.csv')
+head(crime_raw)
+dim(crime_raw)
+crime_raw
+```
+When initially loading the crime data set you can see that there are 23 columns and 1,456,714 observations. This is a pretty huge data set, with more columns than I need to investigate my question and far too many rows for my computer to process. 
+
+
+**Tidying Data**
+```{r}
+keep <- c('ID', 'Case.Number', 'Date', 'IUCR', 'Primary.Type', 'Description', 'Location.Description', 'Arrest', 'Latitude', 'Longitude', 'District')
+crime <- crime_raw[keep]
+crime <- subset(crime, Primary.Type %in% c("HOMICIDE"))
+crime
+crime <- crime %>%
+  separate(Date, c("Month", "year", "day"), sep = "/")
+drop_columns <- c("year", "day")
+crime <- crime[, !(names(crime) %in% drop_columns)]
+crime <- crime %>%
+  group_by(Month)
+dim(crime)
+head(crime)
+```
+I originally wanted to predict the time of year that many different types of crime occur, but the data set was so large that my computer couldn’t handle it, so I decided to look into homicide rates. To deal with the excessive number of columns, I decided to remove unnecessary columns. I decided to just keep 8 columns: 'ID', 'Case.Number', 'Month', 'IUCR', 'Primary.Type', 'Description', 'Location.Description', and 'Arrest'. This means we will have Month as the response variable, and the other 8 as the predictor variables. Month is the response variable because it assigns each homicide with a time of year in which it’s occurring. I will be able to organize the data by month and determine how different types of crime fluctuate.
+
+
+**Missing Values**
+```{r}
+colMeans(is.na(crime)) * 100
+crime <- crime %>% 
+  drop_na()
+vis_miss(crime)
+```
+
+**Describing the Predictors**
+**ID** - Unique identifier for the record.
+**Case Number** - The Chicago Police Department RD Number (Records Division Number), which is unique to the incident.
+**IUCR** - The Illinois Unifrom Crime Reporting code. This is directly linked to the Primary Type and Description. See the list of IUCR codes at https://data.cityofchicago.org/d/c7ck-438e.
+**Primary Type** - The primary description of the IUCR code.
+**Description** - The secondary description of the IUCR code, a subcategory of the primary description.
+**Location Description** - Description of the location where the incident occurred.
+**Arrest** - Indicates whether an arrest was made.
+
+
+**Factorizing Categorical Variables**
+```{r}
+crime$Primary.Type <- as.factor(crime$Primary.Type)
+crime$Description <- as.factor(crime$Description)
+crime$Location.Description <- as.factor(crime$Location.Description)
+crime$Arrest <- as.factor(crime$Arrest)
+```
+
+
+**Visual EDA**
+Crimes Per Month
+```{r}
+month_bar <- ggplot(data = crime, aes(x = Month, fill = Month)) + geom_bar() + stat_count()
+month_bar
+```
+
+Crimes Per Season
+```{r}
+autumn <- crime[crime$Month >= "09" & crime$Month <= "11", ]
+count_autumn <- count(autumn)
+autumn_sum <- sum(count_autumn['n'])
+autumn_sum
+
+winter <- crime[crime$Month == "12" | crime$Month == "01" | crime$Month == "02", ]
+count_winter <- count(winter)
+winter_sum <- sum(count_winter['n'])
+winter_sum
+
+spring <- crime[crime$Month >= "03" & crime$Month <= "05", ]
+count_spring <- count(spring)
+spring_sum <- sum(count_spring['n'])
+spring_sum
+
+summer <- crime[crime$Month >= "06" & crime$Month <= "08", ]
+count_summer <- count(summer)
+summer_sum <- sum(count_summer['n'])
+summer_sum
+
+seasons_sums <- data.frame(autumn_sum, winter_sum, spring_sum, summer_sum)
+seasons_sums
+plot(seasons_sums)
+
+crime$Season <- NA
+crime$Season[crime$Month >= "09" & crime$Month <= "11"] <- "Autumn"
+crime$Season[crime$Month == "12" | crime$Month == "01" | crime$Month == "02"] <- "Winter"
+crime$Season[crime$Month >= "03" & crime$Month <= "05"] <- "Spring"
+crime$Season[crime$Month >= "06" & crime$Month <= "08"] <- "Summer"
+
+crime
+```
+
+Number of Arrests
+```{r}
+num_arrests <- ggplot(data = crime, aes(x = Arrest)) + geom_bar()
+num_arrests
+```
+
+Number of Arrests Per Month
+```{r}
+arrests_grouped <- crime %>%
+  group_by(Month, Arrest)
+arrests_month <- aggregate(Arrest ~ Month, data = arrests_grouped, function(x) length(x))
+arrests_month
+
+arrests_month_plot <- ggplot(arrests_month, aes(x = Month, y = Arrest, fill = Month)) + geom_col()
+arrests_month_plot
+```
+
+Location Description with the Most Homicides
+```{r}
+location_homs <- ggplot(data = crime, aes(x = Location.Description)) + geom_bar() 
+location_homs
+table(crime$Location.Description)
+```
+
+Map of Homicides
+```{r}
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+world <- ne_countries(scale = "medium", returnclass = "sf")
+lat_long_keep <- c('Longitude', 'Latitude')
+lat_long <- crime[lat_long_keep]
+lat_long
+ggplot(data = world) + geom_sf() + geom_point(data = lat_long, aes(x = Longitude, y = Latitude), size = 0.5) + coord_sf(xlim = c(-87.86, -87.5), ylim = c(41.62, 42.05), expand = FALSE)
+```
+
+**Splitting, Testing, Training**
+```{r}
+# train, test, etc.
+crime <- crime[, !(names(crime) %in% "Primary.Type")]
+crime <- crime[, !(names(crime) %in% "IUCR")]
+
+crime_split <- initial_split(crime, strata = Arrest, prop = 0.7)
+
+crime_train <- training(crime_split)
+
+crime_test <- testing(crime_split)
+
+crime_folds <- vfold_cv(crime_train, v = 4, strata = "Arrest")
+
+crime_recipe <- recipe(Arrest ~ Description + Location.Description + Season + Latitude + Longitude + District, data = crime_train) %>% 
+  step_dummy(all_nominal_predictors()) %>%
+  step_nzv(all_predictors()) %>%
+  themis::step_upsample(Arrest, over_ratio = 1)
+
+prep(crime_recipe) %>% bake(crime_train)
+```
+
+
+**Linear Discriminant Analysis Model**
+
+```{r}
+lda_model <- discrim_linear() %>%
+  set_mode("classification") %>%
+  set_engine("MASS")
+
+lda_workflow <- workflow() %>%
+  add_model(lda_model) %>%
+  add_recipe(crime_recipe)
+
+lda_fit <- fit(lda_workflow, crime_train)
+lda_fit
+
+lda_acc <- augment(lda_fit, new_data = crime_train) |>
+  accuracy(truth = Arrest, estimate = .pred_class)
+lda_acc
+
+lda_test_acc <- augment(lda_fit, new_data = crime_test) |>
+  accuracy(truth = Arrest, estimate = .pred_class)
+lda_test_acc
+
+augment(lda_fit, new_data = crime_test) |>
+  conf_mat(Arrest, .pred_class) |>
+  autoplot()
+
+augment(lda_fit, new_data = crime_test) |>
+  accuracy(Arrest, .pred_class)
+
+lda_test_acc$.estimate
+```
+
+**Logistic Model**
+```{r}
+log_model <- logistic_reg() %>%
+  set_mode("classification") %>%
+  set_engine("glm")
+
+log_workflow <- workflow() %>% 
+  add_model(log_model) %>% 
+  add_recipe(crime_recipe)
+
+log_fit_val <- log_workflow %>% 
+  fit_resamples(resamples = crime_folds)
+
+collect_metrics(log_fit_val)
+
+show_best(log_fit_val, metric = "roc_auc")
+
+log_fit <- fit(log_workflow, crime_train)
+
+log_fit %>% extract_fit_parsnip() %>% 
+  vip() +
+  theme_minimal()
+
+log_fit_test <- augment(log_fit, crime_test)
+
+best_roc_log <- roc_auc(
+ log_fit_test, truth = Arrest, .pred_True) 
+
+roc_curve(log_fit_test, truth = Arrest, .pred_True) %>% 
+  autoplot()
+
+conf_mat(log_fit_test, truth = Arrest, .pred_class) %>% autoplot(type = 'heatmap')
+
+best_roc_log$.estimate
+```
+
+**K Nearest Neighbors Model**
+```{r}
+knn_model <- nearest_neighbor(neighbors = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("kknn")
+
+knn_workflow <- workflow() %>% 
+  add_model(knn_model) %>% 
+  add_recipe(crime_recipe)
+
+knn_fit <- fit(knn_workflow, crime_train)
+
+neighbors_grid <- grid_regular(neighbors(range = c(1, 10)), levels = 10)
+
+tune_knn <- tune_grid(
+  object = knn_workflow,
+  resamples = crime_folds, 
+  grid = neighbors_grid
+)
+
+collect_metrics(tune_knn)
+
+show_best(tune_knn, metric = "roc_auc")
+
+best_neighbors <- select_by_one_std_err(
+  tune_knn, 
+  desc(neighbors),
+  metric = "roc_auc")
+
+en_final_knn <- finalize_workflow(knn_workflow,
+                                 best_neighbors)
+
+en_final_knn <- fit(en_final_knn, 
+                        data = crime_train)
+
+final_knn_test <- augment(en_final_knn,
+                               crime_test) |>
+  select(Arrest, starts_with(".pred"))
+
+roc_curves_knn <- roc_curve(
+  final_knn_test, truth = Arrest, .pred_True) |>
+  autoplot(); roc_curves_knn
+
+conf_matrix <- conf_mat(
+  final_knn_test, truth = Arrest,
+         .pred_class) |>
+  autoplot(type = "heatmap")
+
+best_roc_knn <- roc_auc(
+  final_knn_test, truth = Arrest, .pred_True)
+
+best_roc_knn$.estimate
+```
+
+**Random Forest Model**
+```{r}
+random_forest <- rand_forest(mtry = tune(), 
+                           trees = tune(), 
+                           min_n = tune()) %>%
+  set_engine("ranger", importance = "impurity") %>% 
+  set_mode("classification")
+
+rf_workflow <- workflow() %>% 
+  add_model(random_forest) %>% 
+  add_recipe(crime_recipe)
+
+rf_grid <- grid_regular(mtry(range = c(1, 10)), 
+                        trees(range = c(1, 5)),
+                        min_n(range = c(1, 5)),
+                        levels = 5)
+
+tune_rf <- tune_grid(
+  rf_workflow, 
+  resamples = crime_folds, 
+  grid = rf_grid
+)
+
+show_best(tune_rf, metric = 'roc_auc')
+best_rf <- select_best(tune_rf)
+best_rf
+
+head(collect_metrics(tune_rf))
+
+autoplot(tune_rf) + theme_minimal()
+```
+
+**Fitting the Best Random Forest Model**
+```{r}
+best_rf <- select_best(tune_rf, metric = 'roc_auc')
+best_rf
+
+final_rf <- finalize_workflow(rf_workflow, best_rf)
+final_rf <- fit(final_rf, crime_train)
+
+final_rf %>% extract_fit_parsnip() %>% 
+  vip() +
+  theme_minimal()
+
+final_rf_test <- augment(final_rf, crime_test)
+
+best_roc_rf <- roc_auc(
+ final_rf_test, truth = Arrest, .pred_True) 
+
+roc_curve(final_rf_test, truth = Arrest, .pred_True) %>% 
+  autoplot()
+
+conf_mat(final_rf_test, truth = Arrest, 
+         .pred_class) %>% 
+  autoplot(type = "heatmap")
+
+best_roc_rf$.estimate
+```
+
+**Model Comparison and Conclusion**
+```{r}
+best_rocs <- data.frame("LDA" = lda_test_acc$.estimate,
+               "LOG" = best_roc_log$.estimate,
+               "KNN" = best_roc_knn$.estimate,
+               "RF" = best_roc_rf$.estimate)
+
+best_rocs
+```
