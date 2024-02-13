@@ -1,9 +1,3 @@
----
-title: "PSTAT 131 Final Project"
-output: ioslides_presentation
-date: "2023-05-26"
----
-
 **Introduction**
 The goal of this project is to predict how the time of year affects the likelihood of a homicide occurring in Chicago. I am using data found on Kaggle that is pulled directly from the City of Chicago public records. This extensive dataset shows all 1,456,714 crimes recorded between the years 2012 and 2017. I will be implementing machine learning techniques learned throughout the quarter to find the most accurate model to analyze this classification problem.
 
